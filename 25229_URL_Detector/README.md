@@ -1,85 +1,109 @@
+# 🛡️ ENIGMA: UBAD (URL-Based Attack Detector)
 
-# 🚨 SIREN: URL-Based Cyber Attack Detection System
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)  [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=Streamlit&logoColor=white)](https://streamlit.io/)  
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=Streamlit&logoColor=white)](https://streamlit.io/)
+**ENIGMA-UBAD** (**U**RL **B**ased **A**ttack **D**etector) is an advanced cybersecurity tool that analyzes PCAP traffic to detect and classify **URL-based cyberattacks**. It supports **stateful detection** (including brute force tracking) and provides an **interactive dashboard** for security analysts.
 
-**SIREN** (**S**ecurity **I**ntelligence and **R**eal-time **E**xploit **N**etwork analyzer) is an advanced cybersecurity tool designed to detect URL-based attacks from network traffic captured in PCAP files. This system identifies 11 different types of cyber attacks targeting HTTP protocols.
+---
 
 ## 🎯 Problem Statement
 
-Cyber security vulnerabilities in HTTP protocols are being exploited by threat actors through URL-based attacks. SIREN addresses the critical need for automated detection and analysis of these attacks using IP data records (IPDR) from network traffic.
+HTTP is one of the most exploited protocols by cyber threat actors. ENIGMA-UBAD addresses this by scanning packet captures (`.pcap`/`.pcapng`) to identify URL-based attacks using regex signatures, stateful heuristics, and anomaly detection.
+
+---
 
 ## ✨ Features
 
-### Attack Detection Capabilities
-- **SQL Injection** - Detects database manipulation attempts
-- **Cross-Site Scripting (XSS)** - Identifies script injection attacks
-- **Directory Traversal** - Catches path manipulation attempts  
-- **Command Injection** - Detects OS command execution attempts
-- **File Inclusion (LFI/RFI)** - Identifies file inclusion vulnerabilities
-- **Server-Side Request Forgery (SSRF)** - Detects internal network probing
-- **Typosquatting/URL Spoofing** - Identifies domain spoofing attempts
-- **Credential Stuffing/Brute Force** - Detects authentication attacks
-- **HTTP Parameter Pollution** - Catches parameter manipulation
-- **XML External Entity (XXE)** - Identifies XML injection attacks
-- **Web Shell Upload** - Detects backdoor upload attempts
+### Attack Detection
+- **SQL Injection** – Database manipulation attempts  
+- **Cross-Site Scripting (XSS)** – Script injection detection  
+- **Directory Traversal** – Path manipulation  
+- **Command Injection** – Malicious OS commands  
+- **File Inclusion (LFI/RFI)** – Local/remote file inclusion  
+- **Server-Side Request Forgery (SSRF)** – Unauthorized internal access  
+- **Typosquatting / URL Spoofing** – Domain typo detection via Levenshtein distance  
+- **Credential Stuffing / Brute Force** – Stateful login attempt correlation  
+- **HTTP Parameter Pollution** – Multiple param injection  
+- **XML External Entity (XXE)** – Malicious XML payloads  
+- **Web Shell Upload** – Suspicious webshell upload attempts  
 
-### System Capabilities  
-- ✅ PCAP/PCAPNG file ingestion and analysis
-- ✅ Real-time attack pattern matching using regex signatures
-- ✅ Interactive Streamlit web dashboard
-- ✅ Attack filtering by type and source IP
-- ✅ Visual charts and attack distribution analysis
-- ✅ CSV and JSON export functionality
-- ✅ Comprehensive attack logging with timestamps and IP attribution
+### Dashboard Capabilities
+- ✅ Upload `.pcap` / `.pcapng` files via web interface  
+- ✅ Real-time analysis with regex & heuristics  
+- ✅ Interactive **Streamlit** dashboard  
+- ✅ Filter by **attack type, source IP, and status**  
+- ✅ Visualizations (Altair bar charts for attack distribution)  
+- ✅ Export results in **CSV** / **JSON**  
+- ✅ Stateful brute-force tracking within 60s windows  
+
+---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.8 or higher
-- pip package manager
+- Python 3.8+  
+- pip (Python package manager)
 
 ### Installation
 
-1. **Clone the repository**
-   git clone https://github.com/your-username/siren-attack-detector.git
-   cd siren-attack-detector
+```bash
+# Clone the repository
+git clone https://github.com/your-username/enigma-ubad.git
+cd enigma-ubad
 
-2. **Install dependencies**
+# Install dependencies
 pip install -r requirements.txt
+```
 
-3. **Run the application**
+### Run the App
+```bash
 streamlit run app.py
+```
 
-4. **Access the dashboard**
-Open your browser and navigate to `http://localhost:8501`
+Open [http://localhost:8501](http://localhost:8501) in your browser.
 
-### Dependencies
-streamlit>=1.28.0
-pandas>=2.0.0
-scapy>=2.5.0
-nest-asyncio>=1.5.0
+---
+
+## 📦 Dependencies
+
+- streamlit >= 1.28.0  
+- pandas >= 2.0.0  
+- scapy >= 2.5.0  
+- nest-asyncio >= 1.5.0  
+- altair >= 5.0.0  
+
+---
 
 ## 📱 Usage
 
-### Basic Workflow
-1. **Upload PCAP File**: Use the web interface to upload `.pcap` or `.pcapng` files
-2. **Run Analysis**: Click "Analyze" to process the network traffic
-3. **View Results**: Examine detected attacks in the interactive dashboard
-4. **Filter Data**: Filter results by attack type or source IP address
-5. **Export Results**: Download findings in CSV or JSON format
+### 1. Web Dashboard
+1. Launch the app (`streamlit run app.py`)  
+2. Upload a `.pcap` or `.pcapng` file  
+3. View results in the dashboard  
+4. Filter by **attack type**, **source IP**, or **status**  
+5. Export findings to **CSV/JSON**  
 
-### Example Usage
+### 2. Programmatic Usage
+```python
 from detector import AttackDetector
 
-Initialize the detector
 detector = AttackDetector()
+results_df, packet_count = detector.analyze_pcap("network_traffic.pcap")
 
-Analyze a PCAP file
-results = detector.analyze_pcap("network_traffic.pcap")
+print(results_df.head())
+print(f"Total Packets Scanned: {packet_count}")
+```
 
-Display results
-for attack in results:
-print(f"Attack: {attack['attack_type']} from {attack['src_ip']}")
+---
+
+## 📊 Example Output
+
+| Timestamp           | SourceIP    | DestinationIP | Port | AttackType                     | Status              |
+|---------------------|-------------|---------------|------|--------------------------------|---------------------|
+| 2025-10-01 12:01:10 | 192.168.1.5 | 10.0.0.2      | 80   | SQL Injection                  | Attempted           |
+| 2025-10-01 12:02:45 | 192.168.1.7 | 10.0.0.3      | 8080 | Credential Stuffing / Brute Force | Brute Force Detected |
+
+---
+
+## 📜 License
+MIT License – feel free to modify and use for research or production.

@@ -106,4 +106,4 @@ print(f"Total Packets Scanned: {packet_count}")
 ---
 
 ## 📜 License
-MIT License – feel free to modify and use for research or production.
+Thanks!

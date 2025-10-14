@@ -1,249 +1,375 @@
+# detector.py
 import pandas as pd
 import re
 from datetime import datetime, timedelta
-import urllib.parse
 from collections import defaultdict
-import math
 
+# --- External Library Check ---
 try:
-    # Use PcapReader for memory-efficient streaming of PCAP files
     from scapy.all import IP, TCP, Raw
     from scapy.utils import PcapReader
-    # NOTE: You may need to install 'python-Levenshtein' for optimal Typosquatting detection.
-    # The current _calculate_leven_distance is a placeholder and should be replaced 
-    # with 'from Levenshtein import distance as levenshtein_distance' if possible.
 except ImportError:
     print("Scapy is not installed. Please install it using: pip install scapy")
     exit()
 
+
 class AttackDetector:
     """
-    Stateful Attack Detector for URL-based HTTP attacks.
+    Stateful Attack Detector:
+      - Collects multiple matches per HTTP request
+      - Emits one row per matched attack (Option A)
+      - Uses lenient success heuristics (per user request)
+      - Tracks brute-force attempts client-side
     """
+
     def __init__(self):
-        # Regex rules for all 11 attack types specified in the problem statement.
+        # Priority order (most specific -> least specific)
+        self.priority_order = [
+            "Command Injection",
+            "Directory Traversal",
+            "File Inclusion (LFI/RFI)",
+            "SQL Injection",
+            "Server-side Request Forgery (SSRF)",
+            "Web Shell Upload",
+            "XML External Entity Injection (XXE)",
+            "Cross-Site Scripting (XSS)",
+            "HTTP Parameter Pollution",
+            "Credential Stuffing / Brute Force",
+            "Typosquatting / URL Spoofing"
+        ]
+
+        # Regex rules for detection
         self.rules = {
-            "SQL Injection": re.compile(
-                r"('|\")\s*(OR|UNION|SELECT|SLEEP|BENCHMARK|CONCAT|CAST|DROP|INSERT|DELETE)\s*('|\")", re.IGNORECASE
-            ),
-            "Cross-Site Scripting (XSS)": re.compile(
-                r"(<|%3C)script\s*(>|%3E)|javascript:|alert\(|onerror=|onload=|on\w+=|document\.cookie", re.IGNORECASE
+            "Command Injection": re.compile(
+                r"(\b(cmd|bash|sh|powershell|exec|system)\b|\b(&&|\|\||;)\b).*", re.IGNORECASE
             ),
             "Directory Traversal": re.compile(
-                r"(\.\./|\.\.\\|\.\.%2f|\.\.%5c)", re.IGNORECASE
-            ),
-            "Command Injection": re.compile(
-                r"(&&|\|\||;|%26%26|%7C%7C|%3B)\s*(cat|ls|dir|net user|whoami|uname|ipconfig|ifconfig|ps)", re.IGNORECASE
+                r"(\.\./|\.\.\\|%2e%2e%2f|%2e%2e%5c|etc/passwd|windows\\system32|boot.ini)", re.IGNORECASE
             ),
             "File Inclusion (LFI/RFI)": re.compile(
-                r"(file|include|path)=.*?(\.\./|%2e%2e%2f)|http[s]?://", re.IGNORECASE
+                r"(file|include|page|template|load|document)=.*?(?:\.\./|%2e%2e%2f|http[s]?://|ftp://|php://|data:)", re.IGNORECASE
             ),
-            "Typosquatting / URL Spoofing": re.compile(
-                r"(goog1e|faceb00k|micros0ft|amaz0n|g00gle|twitterr|lnstagram|fav0rite|cllck)", re.IGNORECASE
+            "SQL Injection": re.compile(
+                r"(\bUNION\b|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bDROP\b|--|#|/\*|\bOR\b\s+\d+=\d+|\bSLEEP\(|\bBENCHMARK\()", re.IGNORECASE
             ),
-            "Server-Side Request Forgery (SSRF)": re.compile(
-                r"http[s]?://127\.0\.0\.1|http[s]?://localhost|http[s]?://169\.254\.169\.254|redirect=.*http[s]?://", re.IGNORECASE
-            ),
-            "Credential Stuffing / Brute Force": re.compile(
-                r"(login|username|password).*(admin|root|test|1234|password|guest|user)", re.IGNORECASE
-            ),
-            "HTTP Parameter Pollution": re.compile(
-                r"(\?|&).+=.+&.*=.*", re.IGNORECASE
-            ),
-            "XML External Entity Injection (XXE)": re.compile(
-                r"<!DOCTYPE\s+[^>]+\s+\[|\&\w*;|SYSTEM\s+\"file:", re.IGNORECASE
+            "Server-side Request Forgery (SSRF)": re.compile(
+                r"http[s]?://(127\.0\.0\.1|localhost|169\.254\.169\.254|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})|file://|gopher://|dict://", re.IGNORECASE
             ),
             "Web Shell Upload": re.compile(
-                r"/(cmd|backdoor|shell|webshell|upload)\.(asp|aspx|jsp|php|exe)", re.IGNORECASE
+                r"\b(?:r57|c99|webshell|shell)\b|\.(php|asp|aspx|jsp|exe)\b.*(upload|shell|backdoor|cmd)", re.IGNORECASE
+            ),
+            "XML External Entity Injection (XXE)": re.compile(
+                r"<!DOCTYPE\s+[^>]+\[|<!ENTITY\s+.+SYSTEM\s+\"|SYSTEM\s+\"file:", re.IGNORECASE | re.DOTALL
+            ),
+            "Cross-Site Scripting (XSS)": re.compile(
+                r"((<|%3C)\s*script\b|script|javascript:|on\w+\s*=|alert\(|confirm\(|prompt\(|document\.cookie|<img\s+src=)", re.IGNORECASE
+            ),
+            "HTTP Parameter Pollution": re.compile(
+                r"([?&])([a-zA-Z0-9_\-]+)=[^&]*&\2=", re.IGNORECASE
+            ),
+            "Credential Stuffing / Brute Force": re.compile(
+                r"(?:user(name)?|login|usr|pass|password|pwd)=([^&\s]{1,60})", re.IGNORECASE
+            ),
+            "Typosquatting / URL Spoofing": re.compile(
+                r"(g00gle|micros0ft|faceb00k|twitt3r|twitterr|amaz0n|lnstagram|app1e|fav0rite|cllck|go0gle)", re.IGNORECASE
             ),
         }
-        # Updated columns
+
+        # State/configuration
         self.df_columns = [
             "Timestamp", "SourceIP", "DestinationIP", "DestinationPort", "AttackType", "Payload", "AttackStatus"
         ]
-        # State tracking for Brute Force detection: {IP: [timestamp1, timestamp2, ...]}
         self.login_attempts = defaultdict(list)
-        # List of well-known domains for typosquatting check
-        self.known_domains = ["google.com", "facebook.com", "microsoft.com", "amazon.com", "twitter.com"]
+        self.known_domains = ["google.com", "facebook.com", "microsoft.com",
+                              "amazon.com", "twitter.com", "apple.com", "linkedin.com"]
 
+    # -------- helpers ----------
     def _extract_http_info(self, payload: bytes) -> str:
-        """Decodes the raw payload to a UTF-8 string, ignoring errors."""
         try:
             return payload.decode('utf-8', errors='ignore')
         except Exception:
             return ""
 
-    # --- Typosquatting Helper ---
-    def _calculate_leven_distance(self, s1, s2):
-        """Mocks Levenshtein distance for systems without the dependency."""
-        # Replace with actual Levenshtein implementation if the dependency is installed
-        # return levenshtein_distance(s1, s2)
-        # Placeholder logic: return 0 for identical strings, 1 otherwise
-        if len(s1) == 0 or len(s2) == 0:
-            return 99
-        return abs(len(s1) - len(s2)) + (0 if s1 == s2 else 1)
-        
     def _get_host_from_payload(self, payload_str: str) -> str:
-        """Extracts the Host header from an HTTP request payload."""
         match = re.search(r"Host:\s*([^\r\n]+)", payload_str, re.IGNORECASE)
         if match:
-            return match.group(1).split(':')[0]
+            return match.group(1).split(':')[0].strip()
         return ""
 
-    # --- Enriched Success Heuristics ---
-    def _is_attack_successful(self, attack_type: str, http_response: str) -> bool:
-        """
-        Analyzes the server's HTTP response to determine if an attack was successful,
-        using content-based heuristics for critical attacks.
-        """
-        if not http_response: return False
-        
+    def _calculate_leven_distance(self, s1: str, s2: str) -> int:
+        if not s1 or not s2:
+            return 99
+        s1, s2 = s1.lower(), s2.lower()
+        if s1 == s2:
+            return 0
+        if len(s1) == len(s2):
+            return sum(1 for a, b in zip(s1, s2) if a != b)
+        return abs(len(s1) - len(s2)) + 1
+
+    def _get_response_status_and_body(self, http_response: str) -> tuple:
+        if not http_response:
+            return "", "", ""
         try:
-            status_line = http_response.split('\n')[0]
-        except IndexError:
-            return False
-        
-        # 4xx or 5xx usually means failure (Attack Attempted)
-        if any(code in status_line for code in ["400", "404", "403", "500"]):
-            return False
-            
-        # Success is strongly indicated by a 200 OK
-        if "200 OK" in status_line:
-            # Type-specific success checks
-            if attack_type == "SQL Injection":
-                # Check for database error messages
-                sql_error_patterns = re.compile(r"(SQL syntax error|mysql_fetch_array|query failed|unclosed quotation mark)", re.IGNORECASE)
-                if sql_error_patterns.search(http_response):
-                    return True
-                # Check for large data response (suggests successful UNION/data leak)
-                if len(http_response) > 2000: 
-                    return True
+            parts = http_response.split('\r\n\r\n', 1)
+            headers = parts[0]
+            body = parts[1] if len(parts) > 1 else ""
+            status_line = headers.split('\n')[0].strip()
+            status_match = re.search(r'HTTP/\d\.\d\s+(\d{3})', status_line)
+            status_code = status_match.group(1) if status_match else ""
+            return status_line, status_code, body
+        except Exception:
+            return "", "", ""
 
-            elif attack_type == "Cross-Site Scripting (XSS)":
-                # Check for reflection of unencoded common XSS script tags
-                if re.search(r"(<|%3C)script\s*(>|%3E)", http_response, re.IGNORECASE):
-                    return True
+    # -------- lenient success checks ----------
+    def _check_sqli_success(self, http_response: str) -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        err = re.compile(r"(SQL syntax|Query failed|You have an error in your SQL syntax|Unclosed quotation mark after the character string|ORA-009|ODBC SQL Server Driver|PostgreSQL query failed|mysql_fetch_array|ODBC error|Unclosed quotation mark|Warning: mysql_|SQLiteError|SQLSTATE)", re.IGNORECASE)
+        if err.search(body):
+            return True
+        if status_code in ["500", "200"] and len(body) > 500:
+            return True
+        return False
 
-            elif attack_type == "Command Injection":
-                # Check for typical system command output reflection
-                if re.search(r"(root:x:0:0|Directory of|volume serial number)", http_response, re.IGNORECASE):
-                    return True
-            
-            # Default to success for other attacks where 200 is a good indicator
-            elif attack_type in ["Directory Traversal", "File Inclusion (LFI/RFI)", "SSRF", "Web Shell Upload"]:
-                return True
-            
-        return False # Default to not successful if no clear indicator is found.
+    def _check_command_injection_success(self, http_response: str) -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if re.search(r"uid=\d+|gid=\d+|Directory of [A-Za-z]:|Ping statistics for|bytes=|Windows IP Configuration|www-data|nt authority\system|drwxr-xr-x|Volume Serial Number is", body, re.IGNORECASE):
+            return True
+        if status_code == "200" and len(body) > 700:
+            return True
+        return False
 
-    # --- Stateful Brute Force Checker ---
+    def _check_webshell_success(self, http_response: str) -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if re.search(r"(r57|c99|webshell|backdoor|cmdshell|shell)", body, re.IGNORECASE):
+            return True
+        if status_code in ["200", "201"] and re.search(r"upload\s+complete|file\s+saved|successfully uploaded", body, re.IGNORECASE):
+            return True
+        return False
+
+    def _check_file_inclusion_success(self, http_response: str) -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if re.search(r"(root:x:0:0|php\.ini|r57shell|c99shell|IndoXploit|B374K|java.io.FileNotFoundException|javax.servlet.ServletException: File not found|allow_url_include|Warning: require_once()|Warning: include|No such file or directory|java\.io\.File|Fatal error:)", body, re.IGNORECASE):
+            return True
+        if status_code == "200" and len(body) > 600:
+            return True
+        return False
+
+    def _check_xxe_success(self, http_response: str) -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if re.search(r"ENTITY|DOCTYPE|XML parser error|SAXParseException|ENTITY is not defined|ENTITY is not defined|<!ENTITY|file:/etc/passwd|SYSTEM identifier|SYSTEM", body, re.IGNORECASE):
+            return True
+        if status_code == "200" and len(body) > 600:
+            return True
+        return False
+
+    def _check_ssrf_success(self, http_response: str) -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if re.search(r"169\.254\.169\.254|instance-id|ami-id|ec2metadatatoken|computeMetadata|Connection refused|Could not resolve host|metadata", body, re.IGNORECASE):
+            return True
+        if status_code in ["200", "302", "301"] and len(body) > 500:
+            return True
+        return False
+
+    def _check_directory_traversal_success(self, http_response: str) -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if re.search(r"root:x:0:0:|daemon:x:1:1|/etc/passwd|/etc/shadow|win.ini|display_errors =|[boot loader]|/bin/bash|/etc/shadow|boot loader|NT AUTHORITY|Windows .+ Version", body, re.IGNORECASE):
+            return True
+        if status_code == "200" and len(body) > 800:
+            return True
+        return False
+
+    def _check_xss_success(self, http_response: str, injected_snippet: str = "") -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if re.search(r"|onload=|onerror=|(<script>|<|%3C)\s*script\b|<script>alert(1)</script>|javascript:|on\w+\s*=|alert\(|document.cookie|document\.cookie", body, re.IGNORECASE):
+            return True
+        if injected_snippet and injected_snippet in body:
+            return True
+        return False
+
     def _check_brute_force(self, ip: str, timestamp: datetime, attack_type: str) -> str:
-        """
-        Tracks Credential Stuffing attempts and upgrades status if rate-limited.
-        Criteria: 5 attempts within 60 seconds from the same IP.
-        """
         status = "Attempted"
-        
         if attack_type == "Credential Stuffing / Brute Force":
-            # 1. Clean up old attempts (older than 60 seconds)
             one_minute_ago = timestamp - timedelta(seconds=60)
-            self.login_attempts[ip] = [ts for ts in self.login_attempts[ip] if ts >= one_minute_ago]
-            
-            # 2. Add the current attempt
+            self.login_attempts[ip] = [
+                ts for ts in self.login_attempts[ip] if ts >= one_minute_ago]
             self.login_attempts[ip].append(timestamp)
-            
-            # 3. Check for threshold breach
             if len(self.login_attempts[ip]) >= 5:
                 status = "Brute Force Detected"
-                # Optional: clear attempts after detection to prevent immediate re-trigger
-                # self.login_attempts[ip] = [] 
-                
         return status
 
+    def _check_typosquatting_success(self, http_response: str, requested_host: str = "") -> bool:
+        status_line, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if status_code in ["301", "302", "307", "308"]:
+            return True
+        if status_code == "200" and re.search(r"(google|facebook|microsoft|amazon|twitter|instagram|apple|linkedin)", body, re.IGNORECASE):
+            return True
+        if requested_host and any(self._calculate_leven_distance(requested_host, d) <= 2 for d in self.known_domains):
+            if status_code == "200":
+                return True
+        return False
+
+    def _check_hpp_success(self, http_response: str) -> bool:
+        _, status_code, body = self._get_response_status_and_body(
+            http_response)
+        if re.search(r"([a-zA-Z0-9_\-]+)=.*[,&].*\1=", body):
+            return True
+        if status_code == "200" and len(body) > 500:
+            return True
+        return False
+
+    def _verify_attack_success(self, attack_type: str, http_response: str, extra: dict = None) -> bool:
+        extra = extra or {}
+        check_map = {
+            "SQL Injection": lambda r: self._check_sqli_success(r),
+            "Cross-Site Scripting (XSS)": lambda r: self._check_xss_success(r, extra.get("injected_snippet", "")),
+            "Directory Traversal": lambda r: self._check_directory_traversal_success(r),
+            "Command Injection": lambda r: self._check_command_injection_success(r),
+            "File Inclusion (LFI/RFI)": lambda r: self._check_file_inclusion_success(r),
+            "Server-side Request Forgery (SSRF)": lambda r: self._check_ssrf_success(r),
+            "Web Shell Upload": lambda r: self._check_webshell_success(r),
+            "XML External Entity Injection (XXE)": lambda r: self._check_xxe_success(r),
+            "HTTP Parameter Pollution": lambda r: self._check_hpp_success(r),
+            "Typosquatting / URL Spoofing": lambda r: self._check_typosquatting_success(r, extra.get("requested_host", "")),
+            # brute-force determined client-side
+            "Credential Stuffing / Brute Force": lambda r: False,
+        }
+        checker = check_map.get(attack_type)
+        return checker(http_response) if checker else False
+
+    # choose best by priority (not strictly needed now but kept for reference)
+    def _select_best_attack(self, matched_attacks):
+        if not matched_attacks:
+            return None
+        for pref in self.priority_order:
+            if pref in matched_attacks:
+                return pref
+        return matched_attacks[0]
+
+    # ---------- Main analysis ----------
     def analyze_pcap(self, pcap_file_path: str) -> tuple:
         """
-        Analyzes a PCAP file by streaming packets, correlating requests and responses,
-        and classifying attacks based on the server's response.
+        Analyze pcap/pcapng file and return (DataFrame, packet_count).
+        Each matched attack for a single request becomes its own row.
         """
-        detected_attacks = []
+        all_detected_attacks = []
         packet_count = 0
-        http_requests = {} # Stores pending requests waiting for a response.
+        # map request_key -> [attack_info, ...] (a list since multiple matches per request)
+        http_requests = {}
 
-        # --- Performance Optimization: Combine all regex rules into one ---
-        combined_patterns = []
-        for attack_type, pattern in self.rules.items():
-            # Use a clean group name for the combined regex match
-            group_name = re.sub(r'[^a-zA-Z0-9]', '', attack_type)
-            combined_patterns.append(f'(?P<{group_name}>{pattern.pattern})')
-        
-        combined_regex = re.compile('|'.join(combined_patterns), re.IGNORECASE)
-        group_to_attack_type = {re.sub(r'[^a-zA-Z0-9]', '', k): k for k in self.rules.keys()}
-        
-        # --- Performance Optimization: Stream the file with PcapReader ---
-        with PcapReader(pcap_file_path) as pcap_reader:
-            for packet in pcap_reader:
-                packet_count += 1
-                if not packet.haslayer(TCP) or not packet.haslayer(IP) or not packet.haslayer(Raw):
-                    continue
+        try:
+            with PcapReader(pcap_file_path) as pcap_reader:
+                for packet in pcap_reader:
+                    packet_count += 1
 
-                src_ip, dst_ip = packet[IP].src, packet[IP].dst
-                src_port, dst_port = packet[TCP].sport, packet[TCP].dport
-                timestamp = datetime.fromtimestamp(float(packet.time))
-                
-                # --- Logic for HTTP Request (Client -> Server) ---
-                if dst_port in [80, 8080]:
-                    payload_str = self._extract_http_info(packet[Raw].load)
-                    
-                    # 1. Check for standard attack regex matches
-                    match = combined_regex.search(payload_str)
-                    
-                    # 2. Check for Typosquatting (Host header analysis)
-                    host = self._get_host_from_payload(payload_str)
-                    typo_match = False
-                    if host:
-                        # Only check if the regex match wasn't already found to potentially save CPU time
-                        if not match:
-                            for domain in self.known_domains:
-                                if self._calculate_leven_distance(host, domain) <= 2 and host != domain:
-                                    typo_match = True
-                                    break
+                    # ensure needed layers exist
+                    if not (packet.haslayer(IP) and packet.haslayer(TCP) and packet.haslayer(Raw)):
+                        continue
 
-                    # If an attack is found (either regex or typosquatting)
-                    if match or typo_match:
-                        # Determine attack type (Typosquatting if regex failed but typo check passed)
-                        attack_type = group_to_attack_type.get(match.lastgroup, "Typosquatting / URL Spoofing") if match else "Typosquatting / URL Spoofing"
-                        
-                        # Apply Stateful Brute Force check immediately
-                        attack_status = self._check_brute_force(src_ip, timestamp, attack_type)
-                        
-                        attack_info = {
-                            "Timestamp": timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                            "SourceIP": src_ip, "DestinationIP": dst_ip, "DestinationPort": dst_port,
-                            "AttackType": attack_type, "Payload": payload_str.strip().split('\n')[0],
-                            "AttackStatus": attack_status
-                        }
-                        # Store the request, waiting for a server response.
-                        http_requests[(src_ip, src_port, dst_ip, dst_port)] = attack_info
+                    src_ip, dst_ip = packet[IP].src, packet[IP].dst
+                    src_port, dst_port = packet[TCP].sport, packet[TCP].dport
+                    timestamp = datetime.fromtimestamp(float(packet.time))
+                    payload_bytes = bytes(packet[Raw].load)
+                    payload_str = self._extract_http_info(payload_bytes)
 
-                # --- Logic for HTTP Response (Server -> Client) ---
-                elif src_port in [80, 8080]:
-                    request_key = (dst_ip, dst_port, src_ip, src_port)
-                    if request_key in http_requests:
-                        attack_info = http_requests.pop(request_key)
-                        response_payload = self._extract_http_info(packet[Raw].load)
-                        
-                        # Only check for success if not already classified as Brute Force
-                        if attack_info["AttackStatus"] != "Brute Force Detected":
-                            if self._is_attack_successful(attack_info["AttackType"], response_payload):
-                                attack_info["AttackStatus"] = "Successful"
-                        
-                        detected_attacks.append(attack_info)
+                    # HTTP Request (client -> server)
+                    if dst_port in [80, 8080] and payload_str.startswith(("GET ", "POST ", "PUT ", "DELETE ", "HEAD ")):
+                        requested_host = self._get_host_from_payload(
+                            payload_str)
+                        matched_attacks = []
+                        injected_snippet = ""
 
-        # Add any requests that did not get a response as their tracked status ("Attempted" or "Brute Force Detected").
-        detected_attacks.extend(http_requests.values())
-        
-        return pd.DataFrame(detected_attacks, columns=self.df_columns), packet_count
+                        # gather matches (do NOT break early)
+                        for attack_name, regex in self.rules.items():
+                            is_match = False
+                            if attack_name == "Typosquatting / URL Spoofing":
+                                host = requested_host
+                                if host and len(host) > 4:
+                                    for domain in self.known_domains:
+                                        if self._calculate_leven_distance(host, domain) <= 2 and host != domain:
+                                            is_match = True
+                                            break
+                                    if not is_match and regex.search(host or ""):
+                                        is_match = True
+                            elif attack_name == "Cross-Site Scripting (XSS)":
+                                m = regex.search(payload_str)
+                                if m:
+                                    is_match = True
+                                    injected_snippet = (m.group(0) or "")[:120]
+                            else:
+                                if regex.search(payload_str):
+                                    is_match = True
 
+                            if is_match:
+                                matched_attacks.append(attack_name)
 
+                        # Create one attack_info per matched attack (Option A)
+                        if matched_attacks:
+                            req_key = (src_ip, src_port, dst_ip, dst_port)
+                            http_requests.setdefault(req_key, [])
+                            for attack in matched_attacks:
+                                status = "Attempted"
+                                if attack == "Credential Stuffing / Brute Force":
+                                    status = self._check_brute_force(
+                                        src_ip, timestamp, attack)
 
+                                attack_info = {
+                                    "Timestamp": timestamp,  # keep datetime for formatting later
+                                    "SourceIP": src_ip,
+                                    "DestinationIP": dst_ip,
+                                    "DestinationPort": dst_port,
+                                    "AttackType": attack,
+                                    "Payload": payload_str.strip().split('\n')[0][:1000],
+                                    "AttackStatus": status,
+                                    "_context": {
+                                        "injected_snippet": injected_snippet,
+                                        "requested_host": requested_host,
+                                        "matched_attacks": matched_attacks
+                                    }
+                                }
+                                http_requests[req_key].append(attack_info)
 
+                    # HTTP Response (server -> client)
+                    elif src_port in [80, 8080] and payload_str:
+                        req_key = (dst_ip, dst_port, src_ip, src_port)
+                        if req_key in http_requests:
+                            pending_list = http_requests.pop(req_key)
+                            response_payload = payload_str
 
+                            for attack_info in pending_list:
+                                # If brute force was detected previously, keep that status
+                                if attack_info["AttackStatus"] != "Brute Force Detected":
+                                    extra = attack_info.get("_context", {})
+                                    if self._verify_attack_success(attack_info["AttackType"], response_payload, extra):
+                                        attack_info["AttackStatus"] = "Successful"
+
+                                # format timestamp
+                                ts = attack_info["Timestamp"]
+                                if isinstance(ts, datetime):
+                                    attack_info["Timestamp"] = ts.strftime(
+                                        '%Y-%m-%d %H:%M:%S')
+                                attack_info.pop("_context", None)
+                                all_detected_attacks.append(attack_info)
+
+        except Exception as e:
+            print(f"Error processing PCAP file: {e}")
+            return pd.DataFrame([], columns=self.df_columns), 0
+
+        # Any requests left pending (no response) get appended as Attempted/Brute Force Detected
+        for pending_list in http_requests.values():
+            for attack_info in pending_list:
+                ts = attack_info["Timestamp"]
+                if isinstance(ts, datetime):
+                    attack_info["Timestamp"] = ts.strftime('%Y-%m-%d %H:%M:%S')
+                attack_info.pop("_context", None)
+                all_detected_attacks.append(attack_info)
+
+        return pd.DataFrame(all_detected_attacks, columns=self.df_columns), packet_count

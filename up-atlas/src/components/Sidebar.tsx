@@ -2,6 +2,7 @@
 
 import { CheckSquare, Square } from "lucide-react";
 import { cities, rivers, districtsGeoJSON } from "@/data/mockData";
+import { motion } from "framer-motion";
 
 interface SidebarProps {
   layers: {
@@ -11,28 +12,33 @@ interface SidebarProps {
     cities: boolean;
     heatmap: boolean;
   };
-  setLayers: (layers: any) => void;
+  setLayers: (layers: SidebarProps["layers"]) => void;
 }
 
 export default function Sidebar({ layers, setLayers }: SidebarProps) {
-  const toggleLayer = (key: keyof typeof layers) => {
+  const toggleLayer = (key: keyof SidebarProps["layers"]) => {
     setLayers({ ...layers, [key]: !layers[key] });
   };
 
   return (
-    <div className="w-80 bg-white shadow-xl h-full flex flex-col p-4 z-10 overflow-y-auto">
+    <motion.div 
+      initial={{ x: -300 }}
+      animate={{ x: 0 }}
+      transition={{ duration: 0.5, ease: "easeOut" }}
+      className="w-80 bg-white shadow-xl h-full flex flex-col p-4 z-10 overflow-y-auto"
+    >
       <h2 className="text-xl font-bold mb-6 text-slate-800">UP Atlas Controls</h2>
 
       <div className="mb-8">
         <h3 className="text-md font-semibold mb-3 text-slate-700">Map Layers</h3>
         <div className="space-y-3">
-          {Object.entries(layers).map(([key, value]) => (
+          {(Object.keys(layers) as Array<keyof typeof layers>).map((key) => (
             <button
               key={key}
-              onClick={() => toggleLayer(key as any)}
+              onClick={() => toggleLayer(key)}
               className="flex items-center space-x-2 w-full text-left hover:bg-slate-50 p-2 rounded"
             >
-              {value ? <CheckSquare className="text-blue-600" /> : <Square className="text-slate-400" />}
+              {layers[key] ? <CheckSquare className="text-blue-600" /> : <Square className="text-slate-400" />}
               <span className="capitalize text-slate-700">{key}</span>
             </button>
           ))}
@@ -64,6 +70,7 @@ export default function Sidebar({ layers, setLayers }: SidebarProps) {
           </div>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }
+

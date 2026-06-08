@@ -3,6 +3,7 @@
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 import { cities } from "@/data/mockData";
 import { X } from "lucide-react";
+import { motion } from "framer-motion";
 
 export default function AnalyticsPanel({ onClose }: { onClose: () => void }) {
   const topCities = cities.slice(0, 5).map(c => ({ name: c.name, GDP: 26 - c.gdpRank }));
@@ -16,7 +17,13 @@ export default function AnalyticsPanel({ onClose }: { onClose: () => void }) {
   const COLORS = ['#2563EB', '#0EA5E9', '#14B8A6', '#F59E0B'];
 
   return (
-    <div className="absolute right-4 top-20 w-96 bg-white shadow-xl rounded-lg p-4 z-[1000] border border-slate-100">
+    <motion.div 
+      initial={{ opacity: 0, scale: 0.95, y: -20 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95, y: -20 }}
+      transition={{ duration: 0.3 }}
+      className="absolute right-4 top-20 w-96 bg-white shadow-xl rounded-lg p-4 z-[1000] border border-slate-100"
+    >
       <div className="flex justify-between items-center mb-4">
         <h3 className="font-bold text-slate-800">Analytics Dashboard</h3>
         <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-full">
@@ -59,6 +66,6 @@ export default function AnalyticsPanel({ onClose }: { onClose: () => void }) {
           </ResponsiveContainer>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }
